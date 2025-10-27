@@ -1,11 +1,11 @@
 use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
-    token_interface::{Mint, TokenAccount, TokenInterface},
+    token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked},
 };
 
+use crate::error::ErrorCode;
 use crate::states::{Bank, User};
-
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
     #[account(mut)]
@@ -26,4 +26,50 @@ pub struct Withdraw<'info> {
     pub user_token_account: InterfaceAccount<'info, TokenAccount>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub token_program: Interface<'info, TokenInterface>,
+}
+
+pub fn process_withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
+    let user = &mut ctx.accounts.user_account;
+    let deposited_value: u64;
+    if ctx.accounts.mint.to_account_info().key() == user.usdc_address {
+        deposited_value = user.deposited_usdc;
+    } else {
+        deposited_value = user.deposited_sol;
+    }
+
+    if amount > deposited_value {
+        return Err(ErrorCode::InsufficientFunds.into());
+    }
+
+    let transfer_cpi_accounts = TransferChecked {
+        authority: ctx.accounts.bank_token_account.to_account_info(),
+        to: ctx.accounts.user_token_account.to_account_info(),
+        from: ctx.accounts.bank_token_account.to_account_info(),
+        mint: ctx.accounts.mint.to_account_info(),
+    };
+    let mint_key = &ctx.accounts.mint.key();
+    let signer_seeds: &[&[&[u8]]] = &[&[
+        b"treasury",
+        mint_key.as_ref(),
+        &[ctx.bumps.bank_token_account],
+    ]];
+    let cpi_program = ctx.accounts.token_program.to_account_info();
+    let cpi_ctx = CpiContext::new_with_signer(cpi_program, transfer_cpi_accounts, signer_seeds);
+    let decimals = ctx.accounts.mint.decimals;
+    token_interface::transfer_checked(cpi_ctx, amount, decimals)?;
+
+    let bank = &mut ctx.accounts.bank;
+    let share_to_remove =
+        (amount as f64 / bank.total_deposits as f64) * bank.total_deposit_shares as f64;
+    let user = &mut ctx.accounts.user_account;
+    if ctx.accounts.mint.to_account_info().key() == user.usdc_address {
+        user.deposited_usdc -= amount;
+        user.deposited_usdc_shares -= share_to_remove as u64
+    } else {
+        user.deposited_sol -= amount;
+        user.deposited_sol_shares -= share_to_remove as u64;
+    }
+    bank.total_deposits -= amount;
+    bank.total_deposit_shares -= share_to_remove as u64;
+    Ok(())
 }
