@@ -20,4 +20,7 @@ pub mod lending_app {
         process_init_User(ctx, usdc_address);
         Ok(())
     }
+    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+        process_deposit(ctx, amount)
+    }
 }
