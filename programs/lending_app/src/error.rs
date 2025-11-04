@@ -4,4 +4,10 @@ use anchor_lang::prelude::*;
 pub enum ErrorCode {
     #[msg("User has Insufficient Funds")]
     InsufficientFunds,
+    #[msg("Invalid Account")]
+    InvalidPythAccount,
+    #[msg("Stale Price")]
+    StalePrice,
+    #[msg("Over Borrowing")]
+    OverBorrow,
 }
