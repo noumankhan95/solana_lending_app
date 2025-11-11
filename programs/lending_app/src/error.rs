@@ -10,4 +10,8 @@ pub enum ErrorCode {
     StalePrice,
     #[msg("Over Borrowing")]
     OverBorrow,
+    #[msg("Over Repaying")]
+    OverRepay,
+    #[msg("User has Healthy Collateral")]
+    NotUndercollateralized,
 }

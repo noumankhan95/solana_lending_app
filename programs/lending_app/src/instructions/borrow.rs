@@ -6,7 +6,7 @@ use crate::states::{Bank, User};
 use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
-    token_interface::{Mint, TokenAccount, TokenInterface},
+    token_interface::{transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked},
 };
 
 use pyth_sdk_solana::state::SolanaPriceAccount;
@@ -64,13 +64,48 @@ pub fn process_borrow(ctx: Context<Borrow>, amount: u64) -> Result<()> {
     let borrowable_amount = total_collateral
         .checked_mul(bank.liquidation_threshold)
         .unwrap();
-    if (borrowable_amount < amount) {
+    if borrowable_amount < amount {
         return Err(ErrorCode::OverBorrow.into());
     }
+    let transfer_cpi_accounts = TransferChecked {
+        from: ctx.accounts.bank_token_account.to_account_info(),
+        authority: ctx.accounts.bank_token_account.to_account_info(),
+        to: ctx.accounts.user_token_account.to_account_info(),
+        mint: ctx.accounts.mint.to_account_info(),
+    };
+    let cpi_program = ctx.accounts.token_program.to_account_info();
+    let mint_key = ctx.accounts.mint.key();
+    let signer_seeds: &[&[&[u8]]] = &[&[
+        b"treasury",
+        mint_key.as_ref(),
+        &[ctx.bumps.bank_token_account],
+    ]];
+    let cpi_ctx = CpiContext::new(cpi_program, transfer_cpi_accounts).with_signer(signer_seeds);
+    let decimals = ctx.accounts.mint.decimals;
+    transfer_checked(cpi_ctx, amount, decimals)?;
+    if bank.total_borrow == 0 {
+        bank.total_borrow = amount;
+        bank.total_borrow_shares = amount;
+    }
+
+    let borrow_ratio = amount.checked_div(bank.total_borrow).unwrap();
+    let user_shares = bank.total_borrow_shares.checked_mul(borrow_ratio).unwrap();
+
+    match ctx.accounts.mint.to_account_info().key() {
+        key if key == user.usdc_address => {
+            user.borrowed_usdc += amount;
+            user.borrowed_usdc_shares += user_shares;
+        }
+        _ => {
+            user.borrowed_sol += amount;
+            user.borrowed_sol_shares += user_shares;
+        }
+    }
+    user.last_updated_borrow = Clock::get()?.unix_timestamp;
     Ok(())
 }
 
-fn calculate_interest(deposited: u64, interest_rate: u64, last_updated: i64) -> Result<u64> {
+pub fn calculate_interest(deposited: u64, interest_rate: u64, last_updated: i64) -> Result<u64> {
     let current_time = Clock::get()?.unix_timestamp;
     let time_diff = current_time - last_updated;
     let new_val =
